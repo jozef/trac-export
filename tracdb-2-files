@@ -1,0 +1,44 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+xxx - desc
+
+=head1 SYNOPSIS
+
+=head1 DESCRIPTION
+
+=cut
+
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use Pod::Usage;
+use DBD::SQLite;
+use IO::Any;
+
+exit main();
+
+sub main {
+	my $help;
+	GetOptions(
+		'help|h' => \$help,
+	) or pod2usage;
+	pod2usage if $help;
+	
+	my $dbh = DBI->connect("dbi:SQLite:dbname=trac.db","","");
+	my $wikis = $dbh->selectall_arrayref(
+		"SELECT name, text, version FROM wiki ORDER BY version ASC",
+		{ Slice => {} }
+	);
+	foreach my $wiki ( @$wikis ) {
+		my $name = $wiki->{'name'};
+		$name =~ s/[^A-Za-z0-9]//g;
+		print 'Name: ', $name, ' (', $wiki->{'version'},')', "\n";
+		IO::Any->spew([$name], $wiki->{'text'});
+	}
+	
+	return 0;
+}

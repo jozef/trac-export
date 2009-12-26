@@ -1,0 +1,153 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+xxx - desc
+
+=head1 SYNOPSIS
+
+=head1 DESCRIPTION
+
+=cut
+
+
+use strict;
+use warnings;
+
+use 5.010;
+
+use Getopt::Long;
+use Pod::Usage;
+use HTML::Entities 'encode_entities';
+use XML::LibXML;
+
+exit main();
+
+sub main {
+	my $help;
+	GetOptions(
+		'help|h' => \$help,
+	) or pod2usage;
+	pod2usage if $help;
+	
+	my $dom  = XML::LibXML::Document->createDocument();
+	my $root = $dom->createElement('div');
+	$dom->setDocumentElement( $root );
+	while (my $line = <>) {
+		state $code_block;
+		state @uls;
+		state $ul_spaces = 0;
+		state $paragraph;
+		
+		if ($code_block) {
+			if ($line =~ m/^}}}/) {
+				$code_block = undef;
+			}
+			else {
+				$code_block->appendText($line)
+			}
+			next;
+		}
+		
+		given ($line) {
+			when (/^{{{/) {
+				$paragraph = undef;
+				$code_block = $dom->createElement('pre');
+				$root->addChild($code_block);
+				$root->appendText("\n");
+			}
+			when (/^ (=+) \s* ([^=]+?) \s* =+/xms) {
+				$paragraph = undef;
+				my $level = length($1);
+				my $text  = $2;
+
+				my $heading = $dom->createElement('h'.$level);
+				$heading->appendText($text);
+				$root->appendText("\n");
+				$root->addChild($heading);
+				$root->appendText("\n\n");
+			}
+			when (/^ (\s+) (\*|\d+\.|a\.|i\.) \s (.+)/xms) {
+				$paragraph = undef;
+				my $spaces = $1;
+				my $type   = $2;
+				my $text   = $3;
+				chomp $text;
+				
+				if (length($spaces) > $ul_spaces) {
+					my $ul = $dom->createElement('ul');
+					$root->addChild($ul);
+					$ul->appendText("\n");
+					$root->appendText("\n");
+					push @uls, $ul;					
+					$ul_spaces = length($spaces);
+				}
+				elsif (length($spaces) < $ul_spaces) {
+					$ul_spaces = length($spaces);
+					pop @uls;
+					die 'badly nested list...' if not @uls;
+				}
+				my $li = $dom->createElement('li');
+				add_wiki_text($li, $text);
+				
+				my $ul = $uls[-1];				
+				$ul->appendText($spaces);
+				$ul->addChild($li);
+				$ul->appendText("\n");
+			}
+			when (/^ ---+ $/xms) {
+				$paragraph = undef;
+				my $hr = $dom->createElement('hr');
+				$root->addChild($hr);
+			}
+			when (/^ \s* $/xms) {
+				$paragraph = undef;
+				if (@uls and ($line !~ m/^ \s* <li>/xms)) {
+					@uls = ();
+					$ul_spaces = 0;
+				}
+			}
+			default {
+				if (@uls and ($line !~ m/^ \s* <li>/xms)) {
+					@uls = ();
+					$ul_spaces = 0;
+				}
+
+				if (not $paragraph) {
+					$paragraph = $dom->createElement('p');
+					$root->addChild($paragraph);
+					$root->appendText("\n\n");
+				}
+				add_wiki_text($paragraph, $line);
+			}
+		}		
+	}
+	print $dom->toString;
+	
+	return 0;
+}
+
+sub add_wiki_text {
+	my $el   = shift;
+	my $text = shift;
+	
+	my $parser = XML::LibXML->new();
+
+	$text =~ s{<}{&lt;}xmsg;
+	$text =~ s{>}{&gt;}xmsg;
+	$text =~ s{'''''(.+?)'''''}{<b><i>$1</i></b>}xmsg;
+	$text =~ s{'''(.+?)'''}{<b>$1</b>}xmsg;
+	$text =~ s{''(.+?)''}{<i>$1</i>}xmsg;
+	$text =~ s|{{{(.+?)}}}|<code>$1</code>|xmsg;
+	$text =~ s|`(.+?)`|<code>$1</code>|xmsg;
+	$text =~ s|\^(.+?)\^|<sup>$1</sup>|xmsg;
+	$text =~ s|,,(.+?),,|<sub>$1</sub>|xmsg;
+	$text =~ s|\[\[BR\]\]|<br/>|xmsg;
+	$text =~ s|\[([^\s]+)\s+([^\]]+)\]|<a href="$1">$2</a>|xmsg;
+	
+	my $node = $parser->parse_string('<div>'.$text.'</div>');
+	foreach my $child_node ($node->childNodes()) {
+		$el->addChild($child_node);
+	}
+	return;
+}
