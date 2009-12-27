@@ -29,6 +29,130 @@ sub main {
 		'help|h' => \$help,
 	) or pod2usage;
 	pod2usage if $help;
+
+	use Regexp::Grammars;	
+	use re 'eval';
+	my $parser = qr@
+		<Wiki>
+		
+		<rule: Wiki>     <[Block]>*
+		<rule: Block>    <.EmptyLine> | <Code> | <Para>
+		<token: Para>    <Heading> | <List> | <TextLines>
+		<token: EmptyLine> ^ \h* \R
+		<token: TextLines> (?:^ (?! <Code> | <Heading> | <List> | <EmptyLine> ) [^\h] .+? \v)+
+		<token: CodeStart> ^ {{{ \h* \v
+		<token: CodeEnd>   ^ }}} \h* \v
+		<token: Code>      <.CodeStart> <CodeLines> <.CodeEnd>
+		<token: CodeLines> .+?
+		<token: Heading>   <HeadingStart> \s <HeadingText> \s =+ \h* \v
+		<token: HeadingStart> ^=+
+		<token: HeadingText>  [^=\v]+
+		<token: List>         <[ListItem]>+
+		<token: ListItem>     ^ <ListItemSpaces> <ListItemType> \h+ <ListItemText> \v
+		<token: ListItemSpaces> \h+
+		<token: ListItemType>   (\*|\d+\.|a\.|i\.)
+		<token: ListItemText>   .+?
+	@xms;
+
+	my $data = do { local $/; <> };
+	die 'wiki parsing failed'
+		if $data !~ $parser;
+
+	my @wiki_blocks =
+		grep { ref $_ eq 'HASH' }
+		@{ $/{'Wiki'}->{'Block'} || [] }
+	;
+
+	my $dom  = XML::LibXML::Document->createDocument();
+	my $root = $dom->createElement('div');
+	$root->appendText("\n");
+	$dom->setDocumentElement( $root );
+		
+	foreach my $block (@wiki_blocks) {
+		my ($block_name) = grep { $_ } keys %{$block};
+		given ($block_name) {
+			when ('Code') {
+				my $code_block = $dom->createElement('pre');
+				$code_block->appendText($block->{'Code'}->{'CodeLines'});
+				$root->addChild($code_block);
+				$root->appendText("\n");
+			}
+			when ('Para') {
+				my $para = $block->{'Para'};
+				my ($para_name) = grep { $_ } keys %{$para};
+				given ($para_name) {
+					when ('TextLines') {
+						my $p_block = $dom->createElement('p');
+						add_wiki_text($p_block, $para->{'TextLines'});
+						$root->addChild($p_block);
+						$root->appendText("\n\n");
+					}
+					when ('Heading') {
+						my $level = length($para->{'Heading'}->{'HeadingStart'});
+						my $text  = $para->{'Heading'}->{'HeadingText'};
+						
+						my $heading = $dom->createElement('h'.$level);
+						$heading->appendText($text);
+						$root->addChild($heading);
+						$root->appendText("\n\n");
+					}
+					when ('List') {
+						my $new_ul_element = $root;
+						my @uls;
+						my $ul_spaces = 0;
+						my @items = @{ $para->{'List'}->{'ListItem'} || [] };
+						foreach my $item (@items) {
+							my $spaces = $item->{'ListItemSpaces'};
+							my $type   = $item->{'ListItemType'};
+							my $text   = $item->{'ListItemText'};
+							
+							my $li = $dom->createElement('li');
+							add_wiki_text($li, $text);
+							if (length($spaces) > $ul_spaces) {
+								my $ul = $dom->createElement('ul');
+								$new_ul_element->addChild($ul);
+								$ul->appendText("\n");
+								$root->appendText("\n");
+								push @uls, $ul;
+								$ul_spaces = length($spaces);
+							}
+							elsif (length($spaces) < $ul_spaces) {
+								$ul_spaces = length($spaces);
+								pop @uls;
+								die 'badly nested list...' if not @uls;
+							}
+							$new_ul_element = $li;
+							
+							my $ul = $uls[-1];				
+							$ul->appendText($spaces);
+							$ul->addChild($li);
+							$ul->appendText("\n");
+						}
+					}
+					default {
+						die 'unknown element "'.$_.'"';
+					}
+				}
+			}
+			default {
+				die 'unknown element "'.$_.'"';
+			}
+		}
+	}
+
+	print $dom->toString;
+
+	return 0;	
+}
+
+=cut
+
+sub main_old {
+	my $help;
+	GetOptions(
+		'help|h' => \$help,
+	) or pod2usage;
+	pod2usage if $help;
 	
 	my $dom  = XML::LibXML::Document->createDocument();
 	my $root = $dom->createElement('div');
@@ -127,6 +251,8 @@ sub main {
 	return 0;
 }
 
+=cut
+
 sub add_wiki_text {
 	my $el   = shift;
 	my $text = shift;
@@ -135,6 +261,7 @@ sub add_wiki_text {
 
 	$text =~ s{<}{&lt;}xmsg;
 	$text =~ s{>}{&gt;}xmsg;
+	$text =~ s{&}{&amp;}xmsg;
 	$text =~ s{'''''(.+?)'''''}{<b><i>$1</i></b>}xmsg;
 	$text =~ s{'''(.+?)'''}{<b>$1</b>}xmsg;
 	$text =~ s{''(.+?)''}{<i>$1</i>}xmsg;
@@ -145,9 +272,11 @@ sub add_wiki_text {
 	$text =~ s|\[\[BR\]\]|<br/>|xmsg;
 	$text =~ s|\[([^\s]+)\s+([^\]]+)\]|<a href="$1">$2</a>|xmsg;
 	
-	my $node = $parser->parse_string('<div>'.$text.'</div>');
-	foreach my $child_node ($node->childNodes()) {
+	my $dom = $parser->parse_string('<div>'.$text.'</div>');
+	my ($root) = ($dom->childNodes());
+	foreach my $child_node ($root->childNodes()) {
 		$el->addChild($child_node);
 	}
+	
 	return;
 }
